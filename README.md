@@ -4,7 +4,7 @@ Local Streamlit + Plotly viewer for PSCAD representative voltage envelopes, MM-s
 
 ## Run
 
-The app uses the project-local Python 3.12 environment. From File Explorer, double-click `run_app.bat`; Streamlit opens the default browser. If it does not, open `http://127.0.0.1:8501`. Or run:
+The app uses the project-local Python 3.12 environment. From File Explorer, double-click `run_app.bat`; it opens the default browser and reuses the current app if it is already running. If another process occupies port 8501, close it before relaunching. If the browser does not open, navigate to `http://127.0.0.1:8501`. Or run:
 
 ```powershell
 .\.venv\Scripts\streamlit.exe run .\app.py
