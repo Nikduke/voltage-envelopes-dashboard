@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.test-temp/
+.streamlit/secrets.toml
+graphify-out/
+uploads/
+exports/
+output/
+*.log
+*.tmp
+*.csv
+*.xls
+*.xlsx
+*.xlsm
+!templates/*.xlsx
+!templates/*.xlsm
