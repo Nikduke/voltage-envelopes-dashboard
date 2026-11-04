@@ -4,13 +4,13 @@ Local Streamlit + Plotly viewer for PSCAD representative voltage envelopes, MM-s
 
 ## Run
 
-The app uses the project-local Python 3.12 environment. From File Explorer, double-click `run_app.bat`; or run:
+The app uses the project-local Python 3.12 environment. From File Explorer, double-click `run_app.bat`; Streamlit opens the default browser. If it does not, open `http://127.0.0.1:8501`. Or run:
 
 ```powershell
 .\.venv\Scripts\streamlit.exe run .\app.py
 ```
 
-Open `http://127.0.0.1:8501`. `run_app.bat` does not install packages. To create or refresh the environment, install the exact versions in `requirements.txt` into `.venv`. Run checks with `run_checks.bat`.
+`run_app.bat` does not install packages. To create or refresh the environment, install the exact versions in `requirements.txt` into `.venv`. Run checks with `run_checks.bat`.
 
 The initial source folder is the adjacent `../02_Excel_Example`. Change it in the sidebar for another project. If multiple plausible files exist for a role, select the intended file. Session uploads are optional and stay in Streamlit memory; the app never writes to source folders.
 
