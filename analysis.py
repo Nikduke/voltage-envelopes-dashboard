@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from limits import ic_curve, reference_label
+from limits import CHANGEOVER_S, ic_curve, reference_label
 
 
 CHANNEL_COLUMNS = {
@@ -84,114 +84,131 @@ def summary_envelope(selected: pd.DataFrame, channel: str = "Max_all") -> pd.Dat
     return result
 
 
-def curve_summary(selected: pd.DataFrame, channel: str = "Max_all") -> pd.DataFrame:
-    """Summarize selected curves, retaining only established Max_all provenance."""
-    columns = ["Case", "MM_ID", "Samples", "Peak (kV peak)", "Peak index (s)"]
-    if channel == "Max_all":
-        columns.extend(["Peak Run", "Peak Fault_type"])
-    if selected.empty:
-        return pd.DataFrame(columns=columns)
-    records: list[dict[str, object]] = []
-    for (case, mm_id), group in selected.groupby(["Case", "MM_ID"], sort=True):
-        peak = group.loc[group["Voltage_kV_peak"].idxmax()]
-        record = {
-            "Case": case,
-            "MM_ID": mm_id,
-            "Samples": len(group),
-            "Peak (kV peak)": float(peak["Voltage_kV_peak"]),
-            "Peak index (s)": float(peak["Index_s"]),
-        }
-        if channel == "Max_all":
-            for column in ("Run", "Fault_type"):
-                if column in peak and pd.notna(peak[column]):
-                    record[f"Peak {column}"] = peak[column]
-        records.append(record)
-    return pd.DataFrame(records).reindex(columns=columns)
-
-
 def crossing_summary(
     selected: pd.DataFrame,
     mm_blocks: pd.DataFrame | None,
     measurement: str,
     reference: str,
     channel: str = "Max_all",
+    part: str = "all",
 ) -> pd.DataFrame:
-    """Count ranked samples above a reference; this is not a compliance result."""
-    columns = ["Measurement", "Case", "MM_ID", "Reference", "Ranked samples above reference", "Peak excess (kV)", "Assessment"]
+    """Summarize one ranked-index segment; this is not a compliance result."""
+    if part not in {"all", "SFO", "TOV"}:
+        raise ValueError("part must be 'all', 'SFO', or 'TOV'")
+    return _crossing_summaries(selected, mm_blocks, measurement, reference, channel, (part,))[part]
+
+
+def crossing_summaries(
+    selected: pd.DataFrame,
+    mm_blocks: pd.DataFrame | None,
+    measurement: str,
+    reference: str,
+    channel: str = "Max_all",
+) -> dict[str, pd.DataFrame]:
+    """Calculate full, SFO and TOV comparisons in one pass over the curves."""
+    return _crossing_summaries(selected, mm_blocks, measurement, reference, channel, ("all", "SFO", "TOV"))
+
+
+def _crossing_summaries(
+    selected: pd.DataFrame,
+    mm_blocks: pd.DataFrame | None,
+    measurement: str,
+    reference: str,
+    channel: str,
+    parts: tuple[str, ...],
+) -> dict[str, pd.DataFrame]:
+    columns = [
+        "Measurement",
+        "Case",
+        "MM_ID",
+        "Reference",
+        "Ranked samples above reference",
+        "Runs with exceedance",
+        "Peak excess (kV)",
+        "Over-limit area (kV·ranked-index s)",
+        "Assessment",
+    ]
+    empty = {part: pd.DataFrame(columns=columns) for part in parts}
     if selected.empty or mm_blocks is None or "Group" not in mm_blocks:
-        return pd.DataFrame(columns=columns)
+        return empty
     limits = mm_blocks.drop_duplicates("Group").set_index("Group", drop=False)
-    records: list[dict[str, object]] = []
+    records: dict[str, list[dict[str, object]]] = {part: [] for part in parts}
     for (case, mm_id), group in selected.groupby(["Case", "MM_ID"], sort=True):
         if mm_id not in limits.index:
             continue
         row = limits.loc[mm_id]
         if isinstance(row, pd.DataFrame):
             row = row.iloc[0]
+        ordered = group.sort_values("Index_s", kind="stable")
+        x = ordered["Index_s"].to_numpy(dtype=float)
         try:
-            values = ic_curve(row, measurement, group["Index_s"].to_numpy(dtype=float), reference)
+            values = ic_curve(row, measurement, x, reference)
         except (KeyError, TypeError, ValueError):
             continue
-        difference = group["Voltage_kV_peak"].to_numpy(dtype=float) - values
-        above = difference > 1e-9
-        records.append(
-            {
-                "Measurement": measurement,
-                "Case": case,
-                "MM_ID": mm_id,
-                "Reference": reference_label(reference),
-                "Ranked samples above reference": int(above.sum()),
-                "Peak excess (kV)": float(np.max(difference)) if len(difference) else np.nan,
-                "Assessment": "Numerical ranked-index comparison only; not a chronological compliance assessment",
-            }
-        )
-    return pd.DataFrame(records, columns=columns)
-
-
-def closest_reference_crossing(
-    envelope: pd.DataFrame,
-    mm_blocks: pd.DataFrame | None,
-    measurement: str,
-    reference: str,
-) -> dict[str, object] | None:
-    """Return the nearest sampled sign change with its source identity."""
-    if envelope.empty or mm_blocks is None or "Group" not in mm_blocks:
-        return None
-    limits = mm_blocks.drop_duplicates("Group").set_index("Group", drop=False)
-    ordered = envelope.sort_values("Index_s", kind="stable").copy().reset_index(drop=True)
-    references = np.full(len(ordered), np.nan, dtype=float)
-    for mm_id, positions in ordered.groupby("MM_ID", sort=False).indices.items():
-        if mm_id not in limits.index:
-            continue
-        row = limits.loc[mm_id]
-        if isinstance(row, pd.DataFrame):
-            row = row.iloc[0]
-        try:
-            limit = ic_curve(row, measurement, ordered.iloc[positions]["Index_s"].to_numpy(dtype=float), reference)
-        except (KeyError, TypeError, ValueError):
-            continue
-        references[positions] = limit
-    if not np.isfinite(references).any():
-        return None
-    compared = ordered.copy()
-    compared["Reference_kV_peak"] = references
-    compared["Difference_kV"] = compared["Voltage_kV_peak"].to_numpy(dtype=float) - references
-    difference = compared["Difference_kV"]
-    crossed = difference.abs().le(1e-9)
-    crossed |= difference.shift().mul(difference).lt(0) & compared["Reference_kV_peak"].notna() & compared["Reference_kV_peak"].shift().notna()
-    candidates = compared.loc[crossed]
-    if candidates.empty:
-        return None
-    candidate = candidates.iloc[(candidates["Difference_kV"].abs()).argmin()]
-    result = {
-        "Index_s": float(candidate["Index_s"]),
-        "Envelope_kV_peak": float(candidate["Voltage_kV_peak"]),
-        "Reference_kV_peak": float(candidate["Reference_kV_peak"]),
-        "Case": candidate.get("Case", ""),
-        "MM_ID": candidate.get("MM_ID", ""),
-    }
-    for column in ("Run", "Fault_type"):
-        if column in candidate.index and pd.notna(candidate[column]):
-            result[column] = candidate[column]
-    result["Assessment"] = "Numerical ranked-index crossing only; not a duration violation"
-    return result
+        difference = ordered["Voltage_kV_peak"].to_numpy(dtype=float) - values
+        finite = np.isfinite(x) & np.isfinite(difference)
+        runs = ordered["Run"].to_numpy() if channel == "Max_all" and "Run" in ordered else None
+        faults = ordered["Fault_type"].to_numpy() if runs is not None and "Fault_type" in ordered else None
+        for part in parts:
+            if part == "SFO":
+                mask = x < CHANGEOVER_S
+            elif part == "TOV":
+                mask = x >= CHANGEOVER_S
+            else:
+                mask = np.ones(len(x), dtype=bool)
+            part_x = x[mask]
+            part_difference = difference[mask]
+            part_finite = finite[mask]
+            above = part_finite & (part_difference > 1e-9)
+            widths = np.diff(part_x)
+            left, right = part_difference[:-1], part_difference[1:]
+            valid_pairs = (widths > 0) & part_finite[:-1] & part_finite[1:]
+            both_positive = valid_pairs & (left > 0) & (right > 0)
+            left_positive = valid_pairs & (left > 0) & (right <= 0)
+            right_positive = valid_pairs & (left <= 0) & (right > 0)
+            area_segments = np.zeros(len(widths), dtype=float)
+            area_segments[both_positive] = 0.5 * (left[both_positive] + right[both_positive]) * widths[both_positive]
+            area_segments[left_positive] = (
+                0.5 * left[left_positive] * widths[left_positive]
+                * left[left_positive] / (left[left_positive] - right[left_positive])
+            )
+            area_segments[right_positive] = (
+                0.5 * right[right_positive] * widths[right_positive]
+                * right[right_positive] / (right[right_positive] - left[right_positive])
+            )
+            area = float(area_segments.sum())
+            run_labels: list[str] = []
+            if runs is not None:
+                seen_labels: set[str] = set()
+                positions = np.flatnonzero(mask)[above]
+                run_values = runs[positions]
+                fault_values = faults[positions] if faults is not None else [""] * len(positions)
+                for run, fault_value in zip(run_values, fault_values):
+                    if pd.isna(run):
+                        continue
+                    run_text = str(run).strip()
+                    try:
+                        run_number = float(run)
+                        if run_number.is_integer():
+                            run_text = str(int(run_number))
+                    except (TypeError, ValueError):
+                        pass
+                    fault = str(fault_value).strip()
+                    run_label = f"{run_text} ({fault})" if fault and fault.casefold() != "nan" else run_text
+                    if run_label not in seen_labels:
+                        run_labels.append(run_label)
+                        seen_labels.add(run_label)
+            records[part].append(
+                {
+                    "Measurement": measurement,
+                    "Case": case,
+                    "MM_ID": mm_id,
+                    "Reference": reference_label(reference),
+                    "Ranked samples above reference": int(above.sum()),
+                    "Runs with exceedance": ", ".join(dict.fromkeys(run_labels)),
+                    "Peak excess (kV)": float(np.max(part_difference[part_finite])) if part_finite.any() else np.nan,
+                    "Over-limit area (kV·ranked-index s)": float(area),
+                    "Assessment": "Numerical ranked-index comparison only; not a chronological compliance assessment",
+                }
+            )
+    return {part: pd.DataFrame(rows, columns=columns) for part, rows in records.items()}

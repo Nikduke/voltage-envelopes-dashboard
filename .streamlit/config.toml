@@ -7,10 +7,10 @@ textColor = "#1F2937"
 font = "sans serif"
 
 [server]
-headless = false
-address = "127.0.0.1"
+headless = true
 port = 8501
 maxUploadSize = 200
+runOnSave = true
 
 [client]
 toolbarMode = "minimal"

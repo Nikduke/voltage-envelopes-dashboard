@@ -11,11 +11,24 @@ import plotly.graph_objects as go
 import plotly.express as px
 
 from limits import CHANGEOVER_S, ic_curve
-from sa_data import SAData, interpolate_sa
+from sa_data import SAData
 
 
 CASE_COLOURS = px.colors.qualitative.Safe
 LINE_DASHES = ("solid", "dash", "dot", "dashdot", "longdash", "longdashdot")
+LEGEND_REFERENCE_WIDTH = 1400
+LEGEND_HORIZONTAL_MARGINS = 100
+LEGEND_AVAILABLE_WIDTH = LEGEND_REFERENCE_WIDTH - LEGEND_HORIZONTAL_MARGINS
+LEGEND_MAX_COLUMNS = 3
+LEGEND_ITEM_GAP = 50
+LEGEND_ROW_HEIGHT = 20
+LEGEND_MAX_VISIBLE_ROWS = 9
+LEGEND_MAX_HEIGHT = LEGEND_ROW_HEIGHT * LEGEND_MAX_VISIBLE_ROWS
+LEGEND_LIMIT_MAX_HEIGHT = 80
+LEGEND_TOP_OFFSET = 78
+SUMMARY_LEGEND_TOP_OFFSET = 48
+LEGEND_GAP = 18
+LEGEND_BOTTOM_PADDING = 24
 
 
 def _mm_row_lookup(mm_blocks: pd.DataFrame | None) -> dict[str, pd.Series]:
@@ -23,13 +36,6 @@ def _mm_row_lookup(mm_blocks: pd.DataFrame | None) -> dict[str, pd.Series]:
         return {}
     rows = mm_blocks.drop_duplicates("Group", keep="first")
     return {str(row["Group"]): row for _, row in rows.iterrows()}
-
-
-def _sa_type_lookup(sa_data: SAData | None) -> dict[str, pd.Series]:
-    if sa_data is None or sa_data.types.empty or "SA_ID" not in sa_data.types:
-        return {}
-    rows = sa_data.types.drop_duplicates("SA_ID", keep="first")
-    return {str(row["SA_ID"]): row for _, row in rows.iterrows()}
 
 
 def build_envelope_figure(
@@ -42,30 +48,29 @@ def build_envelope_figure(
     show_ic: bool = True,
     sa_data: SAData | None = None,
     sa_by_mm: dict[str, list[str]] | None = None,
-    include_unknown_sa_basis: bool = False,
-    manual_y_range: tuple[float, float] | None = None,
     uirevision: str = "",
     reference_mms: list[str] | None = None,
     envelope_source: str = "",
     mm_source: str = "",
-    sa_source: str = "",
+    highlight_curve: tuple[str, str] | None = None,
+    plot_container_width: int | None = None,
+    show_sa: bool = True,
 ) -> go.Figure:
     """Build one measurement figure. `data` is already filtered by the UI."""
     figure = go.Figure()
+    is_summary = mode == "summary"
     if data.empty:
         figure.update_layout(
             title=f"{measurement} representative envelope — no selected rows",
-            xaxis_title="Representative-envelope index (s; ranked index, not elapsed exposure time)",
+            xaxis_title="Envelope index (s)",
             yaxis_title="Voltage (kV peak)",
         )
-        return _style_figure(figure, measurement, 0, uirevision, manual_y_range)
+        return _style_figure(figure, measurement, uirevision, plot_container_width, is_summary)
 
-    is_summary = mode == "summary"
     mm_lookup = _mm_row_lookup(mm_blocks)
-    type_lookup = _sa_type_lookup(sa_data)
     all_x = np.sort(pd.to_numeric(data["Index_s"], errors="coerce").dropna().unique())
     if len(all_x) == 0:
-        return _style_figure(figure, measurement, 0, uirevision, manual_y_range)
+        return _style_figure(figure, measurement, uirevision, plot_container_width, is_summary)
 
     if is_summary:
         custom = _customdata(data, channel, include_identity=True)
@@ -74,137 +79,166 @@ def build_envelope_figure(
                 x=data["Index_s"],
                 y=data["Voltage_kV_peak"],
                 mode="lines",
-                name="Maximum selected envelope",
+                name="Maximum envelope",
                 line={"color": "#17365D", "width": 2.7},
+                legend="legend",
+                showlegend=True,
+                legendrank=10,
                 customdata=custom,
                 hovertemplate=_hover_template(channel, summary=True, source=envelope_source),
                 legendgroup="summary",
             )
         )
     else:
-        cases = sorted(data["Case"].astype(str).unique())
-        mms = sorted(data["MM_ID"].astype(str).unique())
-        for case in cases:
-            for mm_index, mm_id in enumerate(mms):
-                group = data.loc[data["Case"].astype(str).eq(case) & data["MM_ID"].astype(str).eq(mm_id)]
-                if group.empty:
-                    continue
-                phase_identity = f"MM_name_{channel[-1]}" if channel in {"Max_A", "Max_B", "Max_C"} else None
-                custom = _customdata(group, channel, phase_identity=phase_identity)
-                colour_index = int(sha256(case.encode("utf-8")).hexdigest()[:8], 16) % len(CASE_COLOURS)
-                colour = CASE_COLOURS[colour_index]
-                figure.add_trace(
-                    go.Scatter(
-                        x=group["Index_s"],
-                        y=group["Voltage_kV_peak"],
-                        mode="lines",
-                        name=f"{case} · {mm_id}",
-                        line={"color": colour, "width": 1.8, "dash": LINE_DASHES[mm_index % len(LINE_DASHES)]},
-                        customdata=custom,
-                        hovertemplate=_hover_template(channel, phase_identity=phase_identity, source=envelope_source),
-                        legendgroup=f"{case}|{mm_id}",
-                    )
+        cases = data["Case"].astype(str)
+        mms = data["MM_ID"].astype(str)
+        case_values = sorted(cases.unique())
+        mm_values = sorted(mms.unique())
+        case_colours = {
+            case: CASE_COLOURS[int(sha256(case.encode("utf-8")).hexdigest()[:8], 16) % len(CASE_COLOURS)]
+            for case in case_values
+        }
+        mm_indices = {mm_id: index for index, mm_id in enumerate(mm_values)}
+        phase_identity = f"MM_name_{channel[-1]}" if channel in {"Max_A", "Max_B", "Max_C"} else None
+        curve_customdata = _curve_customdata(data, channel, phase_identity=phase_identity)
+        groups = data.groupby([cases, mms], sort=True)
+        for (case, mm_id), positions in groups.indices.items():
+            group = data.iloc[positions]
+            custom = curve_customdata[positions]
+            is_highlighted = highlight_curve == (case, mm_id)
+            figure.add_trace(
+                go.Scatter(
+                    x=group["Index_s"],
+                    y=group["Voltage_kV_peak"],
+                    mode="lines",
+                    name=f"{case} · {mm_id}",
+                    line={
+                        "color": case_colours[case],
+                        "width": 3.6 if is_highlighted else (1.8 if highlight_curve is None else 1.1),
+                        "dash": LINE_DASHES[mm_indices[mm_id] % len(LINE_DASHES)],
+                    },
+                    opacity=1 if is_highlighted or highlight_curve is None else 0.2,
+                    legendrank=10,
+                    customdata=custom,
+                    meta=[case, mm_id],
+                    hovertemplate=_curve_hover_template(
+                        channel, phase_identity, source=envelope_source
+                    ),
+                    legendgroup=f"{case}|{mm_id}",
                 )
+            )
 
     data_mms = sorted(data["MM_ID"].astype(str).unique()) if "MM_ID" in data else []
     selected_mms = sorted(reference_mms) if reference_mms is not None else data_mms
     if show_ic and mm_lookup:
-        xs = np.unique(np.r_[all_x, CHANGEOVER_S])
-        xs = xs[(xs >= all_x.min()) & (xs <= all_x.max())]
-        for mm_id in selected_mms:
-            row = mm_lookup.get(mm_id)
-            if row is None:
-                continue
-            try:
-                y = ic_curve(row, measurement, xs, reference)
-            except (KeyError, TypeError, ValueError):
-                continue
-            un = row.get("Un", np.nan)
+        ic_colour = "#C2413B" if reference == "Withstand" else "#D28B00"
+        ic_legend_added = False
+        if is_summary:
+            # The summary takes the IC reference from the MM that governs each
+            # envelope point, so different MMs retain their independent limits.
+            governing_mms = data.set_index("Index_s")["MM_ID"].astype(str)
+            y = np.full(len(all_x), np.nan, dtype=float)
+            for mm_id in governing_mms.unique():
+                row = mm_lookup.get(mm_id)
+                positions = np.flatnonzero(governing_mms.reindex(all_x).to_numpy() == mm_id)
+                if row is None or not len(positions):
+                    continue
+                try:
+                    y[positions] = ic_curve(row, measurement, all_x[positions], reference)
+                except (KeyError, TypeError, ValueError):
+                    continue
             figure.add_trace(
                 go.Scatter(
-                    x=xs,
+                    x=all_x,
                     y=y,
                     mode="lines",
-                    name=f"{mm_id} · {reference} IC",
-                    line={"color": "#222222", "width": 1.7, "dash": "dash" if reference == "Safety margin" else "dot"},
+                    name=f"IC {reference}",
+                    legend="legend2",
+                    line={"color": ic_colour, "width": 1.8, "dash": "dash" if reference == "Safety margin" else "dot"},
+                    legendrank=1000,
                     hovertemplate=(
-                        f"MM: {mm_id}<br>IC {reference}<br>Index: %{{x:.4f}} s<br>"
-                        f"Voltage: %{{y:.2f}} kV peak<br>Un: {un} kV<br>Input workbook: {mm_source}<br>"
-                        "SDPF RMS → peak: ×√2; safety factor: 1.15<extra></extra>"
+                        f"IC {reference}<br>Index: %{{x:.4f}} s<br>Voltage: %{{y:.2f}} kV peak<br>"
+                        "Reference follows the MM governing the envelope at this index.<br>"
+                        f"Input workbook: {mm_source}<br>SDPF RMS → peak: ×√2; safety factor: 1.15<extra></extra>"
                     ),
-                    legendgroup=f"ic|{mm_id}",
+                    legendgroup="ic|summary",
                 )
             )
+        else:
+            xs = np.unique(np.r_[all_x, CHANGEOVER_S])
+            xs = xs[(xs >= all_x.min()) & (xs <= all_x.max())]
+            for mm_id in selected_mms:
+                row = mm_lookup.get(mm_id)
+                if row is None:
+                    continue
+                try:
+                    y = ic_curve(row, measurement, xs, reference)
+                except (KeyError, TypeError, ValueError):
+                    continue
+                un = row.get("Un", np.nan)
+                figure.add_trace(
+                    go.Scatter(
+                        x=xs,
+                        y=y,
+                        mode="lines",
+                        name=f"IC {reference}",
+                        legend="legend2",
+                        line={"color": ic_colour, "width": 1.8, "dash": "dash" if reference == "Safety margin" else "dot"},
+                        showlegend=not ic_legend_added,
+                        legendrank=1000,
+                        hovertemplate=(
+                            f"MM: {mm_id}<br>IC {reference}<br>Index: %{{x:.4f}} s<br>"
+                            f"Voltage: %{{y:.2f}} kV peak<br>Un: {un} kV<br>Input workbook: {mm_source}<br>"
+                            "SDPF RMS → peak: ×√2; safety factor: 1.15<extra></extra>"
+                        ),
+                        legendgroup=f"ic|{mm_id}",
+                    )
+                )
+                ic_legend_added = True
 
-    if measurement == "LG" and sa_data is not None and sa_by_mm:
+    if show_sa and measurement == "LG" and sa_data is not None and sa_data.kind == "new" and sa_by_mm:
         curve_frame = sa_data.curves
+        curves_to_plot: set[str] = set()
         for mm_id, sa_ids in sa_by_mm.items():
             if mm_id not in selected_mms:
                 continue
             for sa_id in sa_ids:
-                type_row = type_lookup.get(str(sa_id))
-                if type_row is None:
-                    continue
-                basis = str(type_row.get("Voltage_Basis", "Unknown")).strip()
-                if basis.casefold() != "kv_peak" and not include_unknown_sa_basis:
-                    continue
-                if str(type_row.get("Curve_Type", "")).strip() != "TOV_withstand":
-                    continue
-                support_low = float(type_row.get("Valid_From_s", -np.inf))
-                support_high = float(type_row.get("Valid_To_s", np.inf))
-                y = interpolate_sa(curve_frame, str(sa_id), all_x, support_low, support_high)
-                if not np.isfinite(y).any():
-                    continue
-                manufacturer = str(type_row.get("Manufacturer", "Unknown"))
-                model = str(type_row.get("Model", "Unknown"))
-                duty = str(type_row.get("Duty_Condition", "Unknown"))
-                status = str(type_row.get("Verification_Status", "Unknown"))
-                known = basis.casefold() == "kv_peak"
-                installed = bool(
-                    sa_data.kind == "new"
-                    and (
-                        sa_data.assignments["MM_ID"].astype(str).eq(mm_id)
-                        & sa_data.assignments["SA_ID"].astype(str).eq(sa_id)
-                        & sa_data.assignments["Installation_Status"].astype(str).eq("Installed")
-                    ).any()
+                curves_to_plot.add(str(sa_id))
+        for sa_id in sorted(curves_to_plot):
+            points = curve_frame.loc[curve_frame["SA_ID"].astype(str).eq(sa_id)].copy()
+            if points.empty or not points["Voltage_kV_peak"].notna().any():
+                continue
+            points = points.sort_values("Duration_s", kind="stable")
+            figure.add_trace(
+                go.Scatter(
+                    x=points["Duration_s"],
+                    y=points["Voltage_kV_peak"],
+                    mode="lines",
+                    connectgaps=False,
+                    name=sa_id,
+                    legend="legend2",
+                    line={"color": "#A33B20", "width": 1.8, "dash": "dashdot"},
+                    showlegend=True,
+                    legendrank=2000,
+                    hovertemplate=(
+                        f"SA ID: {sa_id}<br>Source duration: %{{x:.3f}} s<br>"
+                        "Source voltage: %{y:.2f} kV peak<extra></extra>"
+                    ),
+                    legendgroup=f"sa|{sa_id}",
                 )
-                qualifier = "assigned" if installed else "Comparison only"
-                legend_name = f"{mm_id} · {sa_id} SA TOV ({qualifier})" if known else f"{mm_id} · {sa_id} legacy comparison (basis unknown)"
-                custom = np.column_stack((np.repeat(mm_id, len(all_x)), np.repeat(sa_id, len(all_x))))
-                figure.add_trace(
-                    go.Scatter(
-                        x=all_x,
-                        y=y,
-                        mode="lines",
-                        connectgaps=False,
-                        name=legend_name,
-                        line={"color": "#A33B20", "width": 1.8, "dash": "dashdot"},
-                        customdata=custom,
-                        hovertemplate=(
-                            "MM: %{customdata[0]}<br>SA: %{customdata[1]}<br>"
-                            "Index: %{x:.4f} s<br>Source value: %{y:.2f}<br>"
-                            f"Model: {model}<br>Manufacturer: {manufacturer}<br>Duty: {duty}<br>"
-                            f"Source document: {type_row.get('Source_Document', 'Unknown')}<br>"
-                            f"SA workbook: {sa_source}<br>Valid range: {support_low:g}–{support_high:g} s<br>"
-                            f"Installation comparison: {qualifier}<br>Verification: {status}<br>Voltage basis: {basis}<extra></extra>"
-                        ),
-                        legendgroup=f"sa|{mm_id}|{sa_id}",
-                    )
-                )
+            )
 
     title = f"{measurement} representative envelope — {channel}"
     if is_summary:
         title = f"Maximum selected {measurement} representative envelope"
-    unknown_note = " · legacy SA basis unverified" if include_unknown_sa_basis and measurement == "LG" else ""
     figure.update_layout(
-        title={"text": title + unknown_note, "x": 0.01, "xanchor": "left"},
-        xaxis_title="Representative-envelope index (s; ranked index, not elapsed exposure time)",
-        yaxis_title="Voltage (kV peak)" if not unknown_note else "Voltage (kV peak for envelope/IC; legacy SA value basis unknown)",
+        title={"text": title, "x": 0.01, "xanchor": "left"},
+        xaxis_title="Envelope index (s)",
+        yaxis_title="Voltage (kV peak)",
         hovermode="closest",
-        legend={"orientation": "h", "x": 0, "y": -0.22, "xanchor": "left", "yanchor": "top", "font": {"size": 10}, "groupclick": "togglegroup"},
         uirevision=uirevision,
     )
-    return _style_figure(figure, measurement, len(figure.data), uirevision, manual_y_range)
+    return _style_figure(figure, measurement, uirevision, plot_container_width, is_summary)
 
 
 def _customdata(
@@ -224,6 +258,22 @@ def _customdata(
         columns.extend(column for column in ("Run", "Fault_type") if column in frame)
     if include_identity:
         columns.extend(column for column in ("Run", "Fault_type") if column in frame and column not in columns)
+    return _string_customdata(frame, columns)
+
+
+def _curve_customdata(
+    frame: pd.DataFrame,
+    channel: str,
+    phase_identity: str | None = None,
+) -> np.ndarray:
+    """Keep only point-varying hover fields; case and MM are trace metadata."""
+    columns = [phase_identity] if phase_identity and phase_identity in frame else []
+    if channel == "Max_all":
+        columns.extend(column for column in ("Run", "Fault_type") if column in frame)
+    return _string_customdata(frame, columns)
+
+
+def _string_customdata(frame: pd.DataFrame, columns: list[str]) -> np.ndarray:
     return frame[columns].astype(str).to_numpy() if columns else np.empty((len(frame), 0), dtype=str)
 
 
@@ -236,31 +286,97 @@ def _hover_template(channel: str, phase_identity: str | None = None, summary: bo
     if phase_identity:
         template += f"<br>{phase_identity}: %{{customdata[{offset}]}}"
         offset += 1
-    if channel == "Max_all" and not summary:
-        template += f"<br>Governing Run: %{{customdata[{offset}]}}<br>Fault type: %{{customdata[{offset + 1}]}}"
-    elif channel == "Max_all" and summary:
+    if channel == "Max_all":
         template += f"<br>Governing Run: %{{customdata[{offset}]}}<br>Fault type: %{{customdata[{offset + 1}]}}"
     template += f"<br>Source: {source or 'selected envelope CSV'}<extra></extra>"
     return template
 
 
+def _curve_hover_template(channel: str, phase_identity: str | None = None, source: str = "") -> str:
+    template = (
+        "Index: %{x:.4f} s<br>Voltage: %{y:.2f} kV peak"
+        "<br>Case: %{meta[0]}<br>MM: %{meta[1]}"
+    )
+    offset = 0
+    if phase_identity:
+        template += f"<br>{phase_identity}: %{{customdata[{offset}]}}"
+        offset += 1
+    if channel == "Max_all":
+        template += f"<br>Governing Run: %{{customdata[{offset}]}}<br>Fault type: %{{customdata[{offset + 1}]}}"
+    template += f"<br>Source: {source or 'selected envelope CSV'}<extra></extra>"
+    return template
+
+
+def _legend_column_layout(
+    labels: list[str], available_width: int = LEGEND_AVAILABLE_WIDTH
+) -> tuple[int, float]:
+    if not labels:
+        return 1, max(0.0, available_width - LEGEND_ITEM_GAP)
+    longest = max(map(len, labels))
+    item_width = max(180.0, 45.0 + 7.0 * longest)
+    columns = max(1, min(LEGEND_MAX_COLUMNS, len(labels), int(available_width // item_width)))
+    entry_width = max(0.0, available_width / columns - LEGEND_ITEM_GAP)
+    return columns, entry_width
+
+
 def _style_figure(
     figure: go.Figure,
     measurement: str,
-    trace_count: int,
     uirevision: str,
-    manual_y_range: tuple[float, float] | None,
+    plot_container_width: int | None = None,
+    is_summary: bool = False,
 ) -> go.Figure:
-    legend_rows = max(1, math.ceil(trace_count / 5))
-    legend_height = 26 * legend_rows
+    curve_labels = [trace.name for trace in figure.data if trace.showlegend is not False and trace.legendrank < 1000]
+    limit_labels = [trace.name for trace in figure.data if trace.showlegend is not False and trace.legendrank >= 1000]
+    all_labels = curve_labels + limit_labels
+    container_width = plot_container_width or LEGEND_REFERENCE_WIDTH
+    available_width = max(1, container_width - LEGEND_HORIZONTAL_MARGINS)
+    columns, entry_width = _legend_column_layout(all_labels, available_width)
+    curve_rows = math.ceil(len(curve_labels) / columns) if curve_labels else 0
+    limit_rows = math.ceil(len(limit_labels) / columns) if limit_labels else 0
+    plot_area_height = 460
+    legend_top_offset = SUMMARY_LEGEND_TOP_OFFSET if is_summary else LEGEND_TOP_OFFSET
+    curve_legend_height = min(LEGEND_MAX_HEIGHT, max(40, curve_rows * LEGEND_ROW_HEIGHT)) if curve_labels else 0
+    limit_legend_height = min(LEGEND_LIMIT_MAX_HEIGHT, max(40, limit_rows * LEGEND_ROW_HEIGHT)) if limit_labels else 0
+    bottom_margin = (
+        legend_top_offset
+        + curve_legend_height
+        + (LEGEND_GAP + limit_legend_height if limit_labels else 0)
+        + LEGEND_BOTTOM_PADDING
+    )
+    height = max(620, 66 + plot_area_height + bottom_margin)
+    legend_style = {
+        "orientation": "h",
+        "x": 0,
+        "xanchor": "left",
+        "yanchor": "top",
+        "font": {"size": 12},
+        "groupclick": "togglegroup",
+        "tracegroupgap": 0,
+        "entrywidth": entry_width,
+        "entrywidthmode": "pixels",
+        "maxheight": max(40, curve_legend_height),
+    }
+    legend = {**legend_style, "y": -legend_top_offset / plot_area_height}
+    legend2 = (
+        {
+            **legend_style,
+            "maxheight": limit_legend_height,
+            "y": -(legend_top_offset + curve_legend_height + LEGEND_GAP) / plot_area_height,
+        }
+        if limit_labels
+        else None
+    )
     figure.update_layout(
         template="plotly_white",
-        width=1400,
-        height=450 + max(0, legend_rows - 1) * 26,
-        margin={"l": 72, "r": 28, "t": 66, "b": 88 + legend_height},
+        width=container_width,
+        height=height,
+        margin={"l": 72, "r": 28, "t": 66, "b": bottom_margin},
         font={"family": "Arial, sans-serif", "size": 12, "color": "#1F2937"},
         paper_bgcolor="#FFFFFF",
         plot_bgcolor="#FFFFFF",
+        legend=legend,
+        legend2=legend2,
         uirevision=uirevision,
     )
     figure.update_xaxes(
@@ -278,6 +394,5 @@ def _style_figure(
         linecolor="#374151",
         tickfont={"color": "#1F2937"},
         title_font={"color": "#1F2937"},
-        range=list(manual_y_range) if manual_y_range else None,
     )
     return figure

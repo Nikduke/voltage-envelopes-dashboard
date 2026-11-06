@@ -8,7 +8,7 @@ from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
 import time
-from typing import Any
+from zipfile import BadZipFile, ZipFile
 
 import pandas as pd
 
@@ -16,8 +16,8 @@ from sa_data import SAData, load_sa_workbook, validate_sa_compatibility
 from validation import make_issue, validate_cross_sources, validate_envelope, validate_mm_blocks
 
 
-SOURCE_ROLES = ("lg", "ll", "mm", "sa", "wl", "dashboard")
-SKIP_DIRS = {".git", ".venv", "__pycache__", "graphify-out", "templates", "tests", "docs", "exports", "uploads", "output"}
+SOURCE_ROLES = ("lg", "ll", "mm", "sa")
+SKIP_ARCHIVE_DIRS = {".git", ".venv", "__pycache__", "__macosx", "graphify-out", "templates", "tests", "docs", "exports", "uploads", "output"}
 
 
 @dataclass(frozen=True)
@@ -27,6 +27,11 @@ class SourceCandidate:
     origin: str
     path: Path | None = None
     data: bytes | None = None
+    content_digest: str = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        digest = sha256(self.data or b"").hexdigest() if self.path is None else ""
+        object.__setattr__(self, "content_digest", digest)
 
     @property
     def label(self) -> str:
@@ -36,8 +41,7 @@ class SourceCandidate:
     def identity(self) -> str:
         if self.path is not None:
             return f"{self.role}|{self.origin}|{self.path.resolve()}"
-        content_hash = sha256(self.data or b"").hexdigest()
-        return f"{self.role}|{self.origin}|{self.filename}|{content_hash}"
+        return f"{self.role}|{self.origin}|{self.filename}|{self.content_digest}"
 
     def source(self) -> Path | BytesIO:
         if self.path is not None:
@@ -52,7 +56,6 @@ class ProjectData:
     mm_blocks: pd.DataFrame | None = None
     input_meta: dict[str, object] = field(default_factory=dict)
     sa: SAData | None = None
-    legacy_wl: pd.DataFrame | None = None
     source_names: dict[str, str] = field(default_factory=dict)
     source_origins: dict[str, str] = field(default_factory=dict)
     issues: list[dict[str, object]] = field(default_factory=list)
@@ -70,44 +73,55 @@ def classify_filename(filename: str) -> str | None:
         if "llp" in stem:
             return "ll"
     if suffix in {".xlsx", ".xlsm"}:
-        if stem.startswith("input_data_pscad_python_v11") or "mm_blocks" in stem:
+        if stem.startswith(("input_data_pscad_python_v11", "input_data_pscad_python_0.11")) or "mm_blocks" in stem:
             return "mm"
-        if stem.startswith("sa_characteristics") or stem.startswith("sas"):
+        if suffix == ".xlsx" and (stem == "sa" or stem.startswith("sa_")):
             return "sa"
-        if stem.startswith("wls"):
-            return "wl"
-        if stem.startswith("voltage_envelope_dashboard"):
-            return "dashboard"
     return None
 
 
 def discover_sources(
-    folder: str | Path, uploads: list[tuple[str, bytes]] | None = None
+    uploads: list[tuple[str, bytes]] | None = None,
 ) -> dict[str, list[SourceCandidate]]:
-    """Find plausible sources. Multiple candidates stay visible for selection."""
+    """Find supported inputs from one ZIP or a set of separately uploaded files."""
     candidates: dict[str, list[SourceCandidate]] = {role: [] for role in SOURCE_ROLES}
-    root = Path(folder).expanduser() if str(folder).strip() else None
-    if root is not None and root.is_dir():
-        for path in sorted(root.rglob("*"), key=lambda item: str(item).casefold()):
-            if not path.is_file() or any(part.casefold() in SKIP_DIRS or part.startswith(".") for part in path.relative_to(root).parts[:-1]):
-                continue
-            if path.name.startswith("~$"):
-                continue
-            role = classify_filename(path.name)
-            if role:
-                candidates[role].append(SourceCandidate(role, path.name, "Folder", path=path))
-    for filename, data in uploads or []:
+    uploaded_files = list(uploads or [])
+    zip_files = [(filename, data) for filename, data in uploaded_files if Path(filename).suffix.casefold() == ".zip"]
+    if len(zip_files) > 1 or (zip_files and len(uploaded_files) > 1):
+        raise ValueError("Upload either one project ZIP or the individual CSV/XLSX files, not both.")
+
+    for filename, data in uploaded_files:
+        if Path(filename).suffix.casefold() == ".zip":
+            try:
+                with ZipFile(BytesIO(data)) as archive:
+                    for member in archive.infolist():
+                        parts = Path(member.filename.replace("\\", "/")).parts
+                        if (
+                            member.is_dir()
+                            or member.filename.startswith("~$")
+                            or any(part.casefold() in SKIP_ARCHIVE_DIRS or part.startswith(".") for part in parts[:-1])
+                        ):
+                            continue
+                        member_name = Path(member.filename).name
+                        role = classify_filename(member_name)
+                        if role:
+                            candidates[role].append(
+                                SourceCandidate(role, member_name, "Project ZIP", data=archive.read(member))
+                            )
+            except BadZipFile as exc:
+                raise ValueError(f"{filename} is not a valid ZIP archive.") from exc
+            continue
         role = classify_filename(filename)
         if role:
-            candidates[role].append(SourceCandidate(role, filename, "Session upload", data=bytes(data)))
+            candidates[role].append(SourceCandidate(role, Path(filename).name, "Uploaded", data=bytes(data)))
     for role in candidates:
         candidates[role].sort(key=lambda candidate: (candidate.filename.casefold(), candidate.origin))
     return candidates
 
 
-def source_signature(selected: dict[str, SourceCandidate | None], folder: str | Path) -> str:
-    """Key cached data to selected source content or path/size/mtime."""
-    parts = [str(Path(folder).expanduser().resolve())]
+def source_signature(selected: dict[str, SourceCandidate | None]) -> str:
+    """Key cached data to the selected source content or path/size/mtime."""
+    parts: list[str] = []
     for role in SOURCE_ROLES:
         candidate = selected.get(role)
         if candidate is None:
@@ -154,13 +168,6 @@ def _read_mm_workbook(candidate: SourceCandidate) -> tuple[pd.DataFrame, dict[st
     return mm, input_meta
 
 
-def _read_legacy_wl(candidate: SourceCandidate) -> pd.DataFrame:
-    with _excel_file(candidate) as workbook:
-        frame = pd.read_excel(workbook, sheet_name=0)
-    frame.columns = [str(column).strip() for column in frame.columns]
-    return frame
-
-
 def load_project_data(selected: dict[str, SourceCandidate | None]) -> ProjectData:
     """Read selected inputs, validate them and return a detached snapshot."""
     started = time.perf_counter()
@@ -181,6 +188,17 @@ def load_project_data(selected: dict[str, SourceCandidate | None]) -> ProjectDat
             for column in ("Time (s)", "Max_A", "Max_B", "Max_C", "Max_all", "Run"):
                 if column in frame.columns:
                     frame[column] = pd.to_numeric(frame[column], errors="coerce")
+            duplicate_rows = int(frame.duplicated().sum())
+            if duplicate_rows:
+                frame = frame.drop_duplicates(keep="first").reset_index(drop=True)
+                data.issues.append(
+                    make_issue(
+                        "Warning",
+                        label,
+                        "exact_duplicate_rows_removed",
+                        f"{duplicate_rows:,} exact duplicate rows were removed; the retained measurements are unchanged.",
+                    )
+                )
             setattr(data, role, frame)
             data.issues.extend(validate_envelope(frame, label))
         except Exception as exc:
@@ -201,20 +219,6 @@ def load_project_data(selected: dict[str, SourceCandidate | None]) -> ProjectDat
         data.sa = load_sa_workbook(sa_candidate.source() if sa_candidate.path is not None else sa_candidate.data or b"", sa_candidate.filename)
         data.issues.extend(data.sa.issues)
         data.issues.extend(validate_sa_compatibility(data.sa, data.mm_blocks))
-
-    wl_candidate = selected.get("wl")
-    if wl_candidate is not None:
-        try:
-            data.legacy_wl = _read_legacy_wl(wl_candidate)
-            required = {"Time (s)", "System", "IC limit"}
-            missing = required - set(data.legacy_wl.columns)
-            if missing:
-                data.issues.append(make_issue("Warning", "Legacy WLs", "missing_legacy_wl_columns", f"Legacy WLs is missing {', '.join(sorted(missing))}; it will not be plotted."))
-            else:
-                data.legacy_wl["Time (s)"] = pd.to_numeric(data.legacy_wl["Time (s)"], errors="coerce")
-                data.legacy_wl["IC limit"] = pd.to_numeric(data.legacy_wl["IC limit"], errors="coerce")
-        except Exception as exc:
-            data.issues.append(make_issue("Warning", "Legacy WLs", "read_error", f"Could not read optional legacy WLs: {exc}"))
 
     data.issues.extend(validate_cross_sources(data.lg, data.ll, data.mm_blocks, data.input_meta))
     data.load_seconds = time.perf_counter() - started
