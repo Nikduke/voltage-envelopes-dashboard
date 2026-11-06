@@ -55,22 +55,25 @@ def build_envelope_figure(
     highlight_curve: tuple[str, str] | None = None,
     plot_container_width: int | None = None,
     show_sa: bool = True,
+    x_range: tuple[float, float] | None = None,
 ) -> go.Figure:
     """Build one measurement figure. `data` is already filtered by the UI."""
     figure = go.Figure()
     is_summary = mode == "summary"
+    if x_range is not None:
+        x_range = tuple(sorted(map(float, x_range)))
     if data.empty:
         figure.update_layout(
             title=f"{measurement} representative envelope — no selected rows",
             xaxis_title="Envelope index (s)",
             yaxis_title="Voltage (kV peak)",
         )
-        return _style_figure(figure, measurement, uirevision, plot_container_width, is_summary)
+        return _style_figure(figure, measurement, uirevision, plot_container_width, is_summary, x_range)
 
     mm_lookup = _mm_row_lookup(mm_blocks)
     all_x = np.sort(pd.to_numeric(data["Index_s"], errors="coerce").dropna().unique())
     if len(all_x) == 0:
-        return _style_figure(figure, measurement, uirevision, plot_container_width, is_summary)
+        return _style_figure(figure, measurement, uirevision, plot_container_width, is_summary, x_range)
 
     if is_summary:
         custom = _customdata(data, channel, include_identity=True)
@@ -238,7 +241,7 @@ def build_envelope_figure(
         hovermode="closest",
         uirevision=uirevision,
     )
-    return _style_figure(figure, measurement, uirevision, plot_container_width, is_summary)
+    return _style_figure(figure, measurement, uirevision, plot_container_width, is_summary, x_range)
 
 
 def _customdata(
@@ -325,6 +328,7 @@ def _style_figure(
     uirevision: str,
     plot_container_width: int | None = None,
     is_summary: bool = False,
+    x_range: tuple[float, float] | None = None,
 ) -> go.Figure:
     curve_labels = [trace.name for trace in figure.data if trace.showlegend is not False and trace.legendrank < 1000]
     limit_labels = [trace.name for trace in figure.data if trace.showlegend is not False and trace.legendrank >= 1000]
@@ -387,6 +391,10 @@ def _style_figure(
         tickfont={"color": "#1F2937"},
         title_font={"color": "#1F2937"},
     )
+    if x_range is not None:
+        figure.update_xaxes(uirevision=f"{uirevision}|xrange:{x_range[0]:.12g}:{x_range[1]:.12g}")
+    if x_range is not None and x_range[0] < x_range[1]:
+        figure.update_xaxes(range=list(x_range), autorange=False)
     figure.update_yaxes(
         showgrid=True,
         gridcolor="#E5E7EB",

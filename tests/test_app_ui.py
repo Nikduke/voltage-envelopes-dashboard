@@ -1,8 +1,10 @@
+import base64
 import json
 from io import BytesIO
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
+import numpy as np
 import pandas as pd
 from streamlit.testing.v1 import AppTest
 from selection_state import selection_after_click
@@ -118,6 +120,13 @@ def _assert_dashboard_controls(at: AppTest) -> None:
     markdown = " ".join(item.value for item in at.markdown)
     assert "Cases (1/1)" in markdown
     assert "MM points (1/1)" in markdown
+
+
+def _trace_x_values(figure: dict, trace_name: str) -> list[float]:
+    values = next(trace["x"] for trace in figure["data"] if trace["name"] == trace_name)
+    if isinstance(values, dict):
+        return np.frombuffer(base64.b64decode(values["bdata"]), dtype=values["dtype"]).tolist()
+    return list(values)
 
 
 def test_empty_app_starts_with_upload_prompt_and_dashboard_tabs():
@@ -354,6 +363,52 @@ def test_sidebar_controls_and_all_envelopes_exceedance_table_with_zip_upload():
     visible_text = " ".join(item.value for item in at.markdown)
     assert "synthetic example" not in visible_text.casefold()
     assert "local server folder" not in visible_text.casefold()
+
+
+def test_index_range_limits_summary_and_all_envelopes_x_axes():
+    at = _run_app_with_uploads([("project.zip", _project_zip(), "application/zip")])
+
+    index_control = next(item for item in at.sidebar.get("select_slider") if item.label == "Index range (s)")
+    assert index_control.value == (0.0, 0.04)
+    default_figures = [json.loads(item.proto.spec) for item in at.get("plotly_chart")]
+    default_axis_revisions = [figure["layout"]["xaxis"]["uirevision"] for figure in default_figures]
+    index_control.set_range(0.02, 0.04)
+    at.run()
+    assert not at.exception
+
+    summary_figures = [json.loads(item.proto.spec) for item in at.get("plotly_chart")]
+    for figure, default_figure, default_axis_revision in zip(
+        summary_figures,
+        default_figures,
+        default_axis_revisions,
+        strict=True,
+    ):
+        assert figure["layout"]["xaxis"]["range"] == [0.02, 0.04]
+        assert figure["layout"]["xaxis"]["autorange"] is False
+        assert figure["layout"]["uirevision"] == default_figure["layout"]["uirevision"]
+        assert figure["layout"]["xaxis"]["uirevision"] != default_axis_revision
+        assert _trace_x_values(figure, "Maximum envelope") == [0.02, 0.04]
+
+    at.session_state["primary_tabs"] = "All envelopes"
+    at.run()
+    assert not at.exception
+    index_control = next(item for item in at.sidebar.get("select_slider") if item.label == "Index range (s)")
+    assert index_control.value == (0.02, 0.04)
+    detailed_figures = [json.loads(item.proto.spec) for item in at.get("plotly_chart")]
+    for figure in detailed_figures:
+        assert figure["layout"]["xaxis"]["range"] == [0.02, 0.04]
+        assert figure["layout"]["xaxis"]["autorange"] is False
+        assert _trace_x_values(figure, "Case 1 · MM_A") == [0.02, 0.04]
+
+    at.session_state["primary_tabs"] = "Data & references"
+    at.run()
+    assert not at.exception
+    assert not [item for item in at.sidebar.get("select_slider") if item.label == "Index range (s)"]
+    assert at.session_state["detail_index_grid"] == (0.02, 0.04)
+    at.session_state["primary_tabs"] = "Summary"
+    at.run()
+    index_control = next(item for item in at.sidebar.get("select_slider") if item.label == "Index range (s)")
+    assert index_control.value == (0.02, 0.04)
 
 
 def test_envelope_channel_uses_wrapping_single_select_pills():

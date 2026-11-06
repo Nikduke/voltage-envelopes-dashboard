@@ -1,5 +1,11 @@
 # Changelog and deferred work
 
+## 2026-11-06 — make index range control both analysis views
+
+- Show the ranked-index range control on Summary and All envelopes, preserving its selection when switching between the two.
+- Apply the selected bounds as explicit Plotly x-axis limits as well as the existing row filter, so the chosen interval is visible and an earlier chart zoom cannot keep stale limits.
+- Added AppTest coverage for both figures and the view-switch state.
+
 ## 2026-11-06 — reuse stable data across tab reruns
 
 - Cache Case/MM option catalogs and the source-derived Data & references tables under the existing project-content signature, with a three-source-set limit.

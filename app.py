@@ -382,18 +382,14 @@ def _index_range(frames: list[pd.DataFrame], key: str, container=st) -> tuple[fl
     low, high = float(values.min()), float(values.max())
     if np.isclose(low, high):
         return low, high
-    previous = st.session_state.get(key)
-    if not isinstance(previous, tuple) or len(previous) != 2 or previous[0] < low or previous[1] > high:
-        st.session_state[key] = (low, high)
     options = np.sort(values.unique()).astype(float).tolist()
-    previous = st.session_state.get(key)
-    if not isinstance(previous, tuple) or len(previous) != 2 or previous[0] not in options or previous[1] not in options:
-        st.session_state[key] = (options[0], options[-1])
     return container.select_slider(
         "Index range (s)",
         options=options,
+        value=(options[0], options[-1]),
         key=key,
         format_func=lambda value: f"{value:.3f}",
+        persist_state="session",
     )
 
 
@@ -506,6 +502,7 @@ def _main_selection_controls(
 def _sidebar_controls(
     project: ProjectData,
     signature: str,
+    active_analysis_view: bool,
     active_all_envelopes: bool,
     voltage: float,
     cases: list[str],
@@ -532,19 +529,21 @@ def _sidebar_controls(
     index = None
     channel = "Max_all"
     selected_curves: dict[str, pd.DataFrame] = {}
-    if active_all_envelopes:
+    if active_analysis_view:
         with st.sidebar.expander("Envelope controls", expanded=False) as envelope_controls:
             index = _index_range(source_frames, "detail_index_grid", envelope_controls)
-            channel = _valid_single_pill(
-                "Envelope channel",
-                ["Max_all", "Max_A", "Max_B", "Max_C"],
-                "detail_channel",
-                container=envelope_controls,
-            ) or "Max_all"
-        selected_curves = {
-            "LG": select_curves(project.lg, cases, selected_mms, index, channel),
-            "LL": select_curves(project.ll, cases, selected_mms, index, channel),
-        }
+            if active_all_envelopes:
+                channel = _valid_single_pill(
+                    "Envelope channel",
+                    ["Max_all", "Max_A", "Max_B", "Max_C"],
+                    "detail_channel",
+                    container=envelope_controls,
+                ) or "Max_all"
+        if active_all_envelopes:
+            selected_curves = {
+                "LG": select_curves(project.lg, cases, selected_mms, index, channel),
+                "LL": select_curves(project.ll, cases, selected_mms, index, channel),
+            }
 
     return {
         "index": index,
@@ -770,6 +769,7 @@ def _render_detailed_view(
             else None,
             plot_container_width=plot_container_width,
             show_sa=show_sa,
+            x_range=index,
         )
         report_figures[measurement] = figure
         st.plotly_chart(
@@ -843,6 +843,7 @@ def _render_summary_view(
     reference: str,
     cases: list[str],
     mms: list[str],
+    index: tuple[float, float] | None,
     show_ic: bool,
     show_sa: bool,
     sa_by_mm: dict[str, list[str]],
@@ -854,8 +855,8 @@ def _render_summary_view(
         st.info("Select at least one case and one MM point to display the summary.")
         return
     selected = {
-        "LG": select_curves(project.lg, cases, mms, None, "Max_all"),
-        "LL": select_curves(project.ll, cases, mms, None, "Max_all"),
+        "LG": select_curves(project.lg, cases, mms, index, "Max_all"),
+        "LL": select_curves(project.ll, cases, mms, index, "Max_all"),
     }
     maxima = {measurement: summary_envelope(frame, "Max_all") for measurement, frame in selected.items()}
     plotted: list[pd.DataFrame] = []
@@ -880,6 +881,7 @@ def _render_summary_view(
             mm_source=project.source_names.get("mm", ""),
             plot_container_width=plot_container_width,
             show_sa=show_sa,
+            x_range=index,
         )
         report_figures[measurement] = figure
         st.plotly_chart(
@@ -904,7 +906,7 @@ def _render_summary_view(
         "MM points": mms,
         "Nominal voltage (kV)": voltage,
         "Envelope channel": "Max_all",
-        "Index range (ranked index s)": "Full source range",
+        "Index range (ranked index s)": index,
         "IC reference": reference,
         "IC changeover (s)": CHANGEOVER_S,
         "Safety factor": SAFETY_FACTOR,
@@ -1003,7 +1005,15 @@ def main() -> None:
             voltage_mms = mms_at_voltage(project.mm_blocks, mms_available, voltage)
             previous_mms = st.session_state.get("selected_mms", voltage_mms)
             mms = [mm for mm in previous_mms if mm in voltage_mms]
-        controls = _sidebar_controls(project, signature, active_tab_index == 1, voltage, cases, mms)
+        controls = _sidebar_controls(
+            project,
+            signature,
+            active_tab_index < 2,
+            active_tab_index == 1,
+            voltage,
+            cases,
+            mms,
+        )
 
     with tabs[active_tab_index]:
         if active_tab_index == 0:
@@ -1017,6 +1027,7 @@ def main() -> None:
                     reference,
                     cases,
                     mms,
+                    controls["index"],
                     controls["show_ic"],
                     controls["show_sa"],
                     controls["sa_by_mm"],
