@@ -509,17 +509,37 @@ def _sidebar_controls(
     selected_mms: list[str],
 ) -> dict[str, object]:
     source_frames = [frame for frame in (project.lg, project.ll) if frame is not None and not frame.empty]
+    sa_assignments, sa_options = _sa_catalog(project, voltage)
+    if not sa_options and st.session_state.get("show_paired_limits", False):
+        st.session_state["show_paired_limits"] = False
+        st.session_state["show_ic_limits"] = True
+        st.session_state["show_sa_limits"] = False
     if "show_ic_limits" not in st.session_state:
         st.session_state["show_ic_limits"] = True
-    show_ic = st.sidebar.toggle("IC limits", key="show_ic_limits")
+    show_ic = st.sidebar.toggle(
+        "IC limits",
+        key="show_ic_limits",
+        on_change=_leave_paired_limit_mode,
+    )
 
-    sa_assignments, sa_options = _sa_catalog(project, voltage)
     if sa_options:
         if "show_sa_limits" not in st.session_state:
             st.session_state["show_sa_limits"] = True
-        show_sa = st.sidebar.toggle("SA limits", key="show_sa_limits")
+        st.session_state.setdefault("show_paired_limits", False)
+        show_sa = st.sidebar.toggle(
+            "SA limits",
+            key="show_sa_limits",
+            on_change=_leave_paired_limit_mode,
+        )
+        show_paired = st.sidebar.toggle(
+            "SA on LGp + IC on LLp",
+            key="show_paired_limits",
+            help="Show selected SA curves on LGp and the selected IC reference on LLp.",
+            on_change=_enable_paired_limit_mode,
+        )
     else:
         show_sa = False
+        show_paired = False
         if project.source_names.get("sa") and (project.sa is None or project.sa.kind != "new"):
             st.sidebar.caption(
                 f"{project.source_names['sa']} could not be used as a dashboard reference; see Data & references → Validation."
@@ -548,11 +568,22 @@ def _sidebar_controls(
     return {
         "index": index,
         "channel": channel,
-        "show_ic": show_ic,
-        "show_sa": show_sa,
+        "show_ic_lg": show_ic and not show_paired,
+        "show_ic_ll": show_ic or show_paired,
+        "show_sa": show_sa or show_paired,
         "sa_by_mm": sa_by_mm,
         "selected_curves": selected_curves,
     }
+
+
+def _leave_paired_limit_mode() -> None:
+    st.session_state["show_paired_limits"] = False
+
+
+def _enable_paired_limit_mode() -> None:
+    if st.session_state.get("show_paired_limits", False):
+        st.session_state["show_ic_limits"] = False
+        st.session_state["show_sa_limits"] = False
 
 
 def _sa_catalog(project: ProjectData, voltage: float) -> tuple[pd.DataFrame, list[str]]:
@@ -687,7 +718,8 @@ def _render_detailed_view(
     mms: list[str],
     index: tuple[float, float] | None,
     channel: str,
-    show_ic: bool,
+    show_ic_lg: bool,
+    show_ic_ll: bool,
     show_sa: bool,
     sa_by_mm: dict[str, list[str]],
     chosen: dict[str, pd.DataFrame],
@@ -757,7 +789,7 @@ def _render_detailed_view(
             "detailed",
             project.mm_blocks,
             reference,
-            show_ic,
+            show_ic_lg if measurement == "LG" else show_ic_ll,
             project.sa,
             sa_by_mm if measurement == "LG" else {},
             f"{signature}|detail|{measurement}|{','.join(cases)}|{','.join(mms)}|{channel}",
@@ -844,7 +876,8 @@ def _render_summary_view(
     cases: list[str],
     mms: list[str],
     index: tuple[float, float] | None,
-    show_ic: bool,
+    show_ic_lg: bool,
+    show_ic_ll: bool,
     show_sa: bool,
     sa_by_mm: dict[str, list[str]],
     plot_container_width: int | None,
@@ -872,7 +905,7 @@ def _render_summary_view(
             "summary",
             project.mm_blocks,
             reference,
-            show_ic,
+            show_ic_lg if measurement == "LG" else show_ic_ll,
             project.sa,
             sa_by_mm if measurement == "LG" else {},
             f"{signature}|summary|{measurement}|{','.join(cases)}|{','.join(mms)}",
@@ -989,7 +1022,8 @@ def main() -> None:
         controls = {
             "index": None,
             "channel": "Max_all",
-            "show_ic": False,
+            "show_ic_lg": False,
+            "show_ic_ll": False,
             "show_sa": False,
             "sa_by_mm": {},
             "selected_curves": {},
@@ -1028,7 +1062,8 @@ def main() -> None:
                     cases,
                     mms,
                     controls["index"],
-                    controls["show_ic"],
+                    controls["show_ic_lg"],
+                    controls["show_ic_ll"],
                     controls["show_sa"],
                     controls["sa_by_mm"],
                     plot_container_width,
@@ -1046,7 +1081,8 @@ def main() -> None:
                     mms,
                     controls["index"],
                     controls["channel"],
-                    controls["show_ic"],
+                    controls["show_ic_lg"],
+                    controls["show_ic_ll"],
                     controls["show_sa"],
                     controls["sa_by_mm"],
                     controls["selected_curves"],

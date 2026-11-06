@@ -26,6 +26,8 @@ The Summary / All envelopes / Data & references tabs are at the top of the main 
 
 IC reference is a two-option segmented control: Safety margin comes first and is selected by default; Withstand is second. Voltage levels and Envelope channel use wrapping, single-select chips sized to their labels, not stretched to fill a row. Envelope channel uses compact horizontal padding so all four choices fit on one row in the standard sidebar; they wrap only when the available sidebar width is narrower. The SA limits toggle and selector appear only when at least one valid SA curve is mapped to an MM point at the selected voltage. If none is available for that voltage, both controls are hidden. The SA All/Clear buttons use an equal-width row below the count so both labels remain fully visible in the sidebar. Available curves are assigned to any MM point whose `Un` matches the selected voltage. Curves assigned to selected MM points are checked by default; users can add other curves mapped to that voltage. Each selected curve is shown once as an LG reference overlay. SA curves remain LG-only. The complete `MM_Assignment` table is inside a collapsed **MM assignments** section on Data & references. The SA workbook template is generated only when its download is requested.
 
+When compatible SA curves exist, **SA on LGp + IC on LLp** is a third sidebar mode. It clears the two standalone toggles, keeps the SA selector visible, and places selected SA curves on LGp and the selected IC reference on LLp in Summary and All envelopes. Clicking either standalone toggle exits paired mode. If a voltage change leaves no compatible SA curve, paired mode is cleared and IC limits return on.
+
 Envelope controls is a collapsed sidebar section shown on Summary and All envelopes. Its index range is shared by both views; selected bounds filter the plotted ranked-index samples and explicitly set the LG and LL x-axis limits. The Envelope channel chips appear only on All envelopes. Data & references has no envelope controls. There is no advanced chart-axis panel because the app uses automatic voltage bounds.
 
 ## Exceedances and legend
@@ -35,6 +37,8 @@ All envelopes places the LG and LL plots above two IC tables: **SFO part violati
 SA curves remain visual references only. Their `Duration_s` axis is elapsed time, while the envelope x-axis is a ranked index; the app does not report SA violations until actual exposure-time data is available.
 
 Each plot presents one visually aligned key using native Plotly legend rows: envelope curves first, then a limits row for IC and SA traces. The Summary curve row explicitly includes `Maximum envelope`; its legend rows sit closer to the chart than the detailed-view legend rows. A small hidden width sensor reads the main chart container width; the Plotly figure width and pixel entry widths are recalculated from that measurement and the longest visible label, with up to three columns. Each legend has a maximum height and uses Plotly's native scroll when its entries exceed that space, so the chart does not grow to fit every curve label. Both rows start at the same left edge and use the same columns and font. IC Withstand is reddish; IC Safety margin is amber. Clicking a legend item toggles the corresponding trace.
+
+SA references use stable cool colors and distinct line dashes, so selected SA curves differ from each other and from the red/amber IC limits. The same styles are used in report PNGs because export starts from the on-page figures.
 
 The x-axis is labelled `Envelope index (s)`. The underlying source index is not a waveform timeline; that interpretation is documented here and in the data contract rather than in the plot label.
 
@@ -74,6 +78,8 @@ These examples informed layout and interaction only. Their calculations, selecti
 ## Summary meaning
 
 At each source index, Summary takes the highest selected value independently and retains the winning Case/MM/Run/Fault type for hover and export. The IC trace follows the MM governing that point. Selected SA reference curves appear only on LG. The All envelopes tab focuses on individual curves that exceed the selected IC reference.
+
+In paired limit mode, IC appears only on LL and the selected SA reference curves remain on LG.
 
 ## Export hierarchy
 

@@ -1,5 +1,11 @@
 # Changelog and deferred work
 
+## 2026-11-06 — add paired IC/SA display and distinguish SA curves
+
+- Added a third sidebar mode, **SA on LGp + IC on LLp**. It clears the two independent toggles, keeps the voltage-filtered SA selector available, and routes overlays to the requested plots on Summary and All envelopes. Clicking either standalone toggle exits paired mode; if the selected voltage has no compatible SA curve, paired mode clears and IC limits return on.
+- Assigned each SA curve a stable cool color and distinct line dash, separate from the red Withstand and amber Safety margin IC lines. The same style is used in report PNGs generated from the figures.
+- Added AppTest checks for paired state transitions, plot routing on both analysis views, voltage fallback and distinct SA styles.
+
 ## 2026-11-06 — make index range control both analysis views
 
 - Show the ranked-index range control on Summary and All envelopes, preserving its selection when switching between the two.

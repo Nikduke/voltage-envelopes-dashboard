@@ -16,6 +16,8 @@ from sa_data import SAData
 
 CASE_COLOURS = px.colors.qualitative.Safe
 LINE_DASHES = ("solid", "dash", "dot", "dashdot", "longdash", "longdashdot")
+SA_LINE_COLOURS = ("#0072B2", "#009E73", "#5E3C99", "#00A6A6", "#56B4E9", "#6A8E00")
+SA_LINE_DASHES = ("dash", "dot", "dashdot", "longdash", "longdashdot", "solid")
 LEGEND_REFERENCE_WIDTH = 1400
 LEGEND_HORIZONTAL_MARGINS = 100
 LEGEND_AVAILABLE_WIDTH = LEGEND_REFERENCE_WIDTH - LEGEND_HORIZONTAL_MARGINS
@@ -201,17 +203,26 @@ def build_envelope_figure(
 
     if show_sa and measurement == "LG" and sa_data is not None and sa_data.kind == "new" and sa_by_mm:
         curve_frame = sa_data.curves
+        available_sa_ids = sorted(curve_frame["SA_ID"].dropna().astype(str).unique())
+        sa_styles = {
+            sa_id: (
+                SA_LINE_COLOURS[index % len(SA_LINE_COLOURS)],
+                SA_LINE_DASHES[(index + index // len(SA_LINE_COLOURS)) % len(SA_LINE_DASHES)],
+            )
+            for index, sa_id in enumerate(available_sa_ids)
+        }
         curves_to_plot: set[str] = set()
-        for mm_id, sa_ids in sa_by_mm.items():
+        for mm_id, selected_sa_ids in sa_by_mm.items():
             if mm_id not in selected_mms:
                 continue
-            for sa_id in sa_ids:
+            for sa_id in selected_sa_ids:
                 curves_to_plot.add(str(sa_id))
         for sa_id in sorted(curves_to_plot):
             points = curve_frame.loc[curve_frame["SA_ID"].astype(str).eq(sa_id)].copy()
             if points.empty or not points["Voltage_kV_peak"].notna().any():
                 continue
             points = points.sort_values("Duration_s", kind="stable")
+            colour, dash = sa_styles[sa_id]
             figure.add_trace(
                 go.Scatter(
                     x=points["Duration_s"],
@@ -220,7 +231,7 @@ def build_envelope_figure(
                     connectgaps=False,
                     name=sa_id,
                     legend="legend2",
-                    line={"color": "#A33B20", "width": 1.8, "dash": "dashdot"},
+                    line={"color": colour, "width": 1.8, "dash": dash},
                     showlegend=True,
                     legendrank=2000,
                     hovertemplate=(

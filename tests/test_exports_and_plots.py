@@ -208,6 +208,10 @@ def test_native_legend_orders_curves_before_ic_and_sa_limits():
     ]
     assert [trace.legendrank for trace in visible] == [10, 10, 1000, 2000, 2000]
     assert figure.data[2].line.color == "#C2413B"
+    sa_traces = [trace for trace in visible if trace.name.startswith("SA ")]
+    assert len({trace.line.color for trace in sa_traces}) == 2
+    assert len({trace.line.dash for trace in sa_traces}) == 2
+    assert not {trace.line.color for trace in sa_traces} & {"#C2413B", "#D28B00"}
     assert [trace.legend for trace in visible] == [None, None, "legend2", "legend2", "legend2"]
     assert figure.layout.legend.font.size == 12
     assert figure.layout.legend.entrywidthmode == "pixels"

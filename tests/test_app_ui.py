@@ -287,6 +287,7 @@ def test_05_project_zip_renders_current_summary_and_all_views():
     assert len(at.get("plotly_chart")) == 2
     assert at.session_state["voltage_level"] == 33.0
     assert not any(item.label == "SA limits" for item in at.get("toggle"))
+    assert not any(item.label == "SA on LGp + IC on LLp" for item in at.get("toggle"))
     assert not any(item.label == "SA limits to apply" for item in at.sidebar.get("pills"))
     assert not any("could not be used" in item.value for item in at.sidebar.get("caption"))
     summary_figures = [json.loads(item.proto.spec) for item in at.get("plotly_chart")]
@@ -307,6 +308,18 @@ def test_05_project_zip_renders_current_summary_and_all_views():
     detailed_figures = [json.loads(item.proto.spec) for item in at.get("plotly_chart")]
     assert any(trace.get("name") == "66 WTT SA" for trace in detailed_figures[0]["data"])
     assert not any(trace.get("name") == "66 WTT SA" for trace in detailed_figures[1]["data"])
+
+    at.toggle(key="show_paired_limits").set_value(True).run(timeout=30)
+    assert at.session_state["show_paired_limits"] is True
+    assert at.session_state["show_ic_limits"] is False
+    assert at.session_state["show_sa_limits"] is False
+    at.session_state["voltage_level"] = 33.0
+    at.run(timeout=30)
+    assert not any(item.label == "SA on LGp + IC on LLp" for item in at.get("toggle"))
+    assert at.session_state["show_paired_limits"] is False
+    assert at.session_state["show_ic_limits"] is True
+    fallback_figures = [json.loads(item.proto.spec) for item in at.get("plotly_chart")]
+    assert all(any(trace["name"].startswith("IC ") for trace in figure["data"]) for figure in fallback_figures)
 
 
 def test_sidebar_controls_and_all_envelopes_exceedance_table_with_zip_upload():
@@ -484,6 +497,7 @@ def test_sa_choices_are_filtered_by_voltage():
 
     assert not at.exception
     assert not any(item.label == "SA limits" for item in at.get("toggle"))
+    assert not any(item.label == "SA on LGp + IC on LLp" for item in at.get("toggle"))
     assert not any(item.label == "SA limits to apply" for item in at.sidebar.get("pills"))
     assert not any("could not be used" in item.value for item in at.sidebar.get("caption"))
     summary_figures = [json.loads(item.proto.spec) for item in at.get("plotly_chart")]
@@ -565,6 +579,7 @@ def test_limit_visibility_toggles_apply_to_summary_and_all_envelopes():
     assert [(item.label, item.value) for item in at.get("toggle")] == [
         ("IC limits", True),
         ("SA limits", True),
+        ("SA on LGp + IC on LLp", False),
     ]
     figures = [json.loads(item.proto.spec) for item in at.get("plotly_chart")]
     assert any(trace["name"].startswith("IC ") for trace in figures[0]["data"])
@@ -586,6 +601,62 @@ def test_limit_visibility_toggles_apply_to_summary_and_all_envelopes():
     figures = [json.loads(item.proto.spec) for item in at.get("plotly_chart")]
     assert any(trace["name"].startswith("IC ") for trace in figures[0]["data"])
     assert not any(trace["name"].endswith(" SA") for trace in figures[0]["data"])
+
+
+def test_paired_limit_toggle_routes_overlays_and_individual_toggles_exit_pair_mode():
+    files = _project_files_for_mms([("MM_230_ONS1", 230.0), ("MM_230_OSS1", 230.0)])
+    sa_path = Path(__file__).resolve().parents[2] / "04_Test_data" / "SA.xlsx"
+    files["SA.xlsx"] = sa_path.read_bytes()
+    at = _run_app_with_uploads([("project.zip", _project_zip(files), "application/zip")])
+    sa_key = _sa_selection_key(at)
+    assert set(at.session_state[sa_key]) == {"230 OnS SA", "230 OSS SA"}
+
+    at.toggle(key="show_paired_limits").set_value(True).run()
+    assert at.session_state["show_ic_limits"] is False
+    assert at.session_state["show_sa_limits"] is False
+    assert at.session_state["show_paired_limits"] is True
+    sidebar_keys = {item.key for item in _descendants(at.sidebar) if getattr(item, "key", None)}
+    assert f"{sa_key}_chips" in sidebar_keys
+    assert at.session_state[f"{sa_key}_options"] == ["230 OSS SA", "230 OnS SA"]
+    summary_figures = [json.loads(item.proto.spec) for item in at.get("plotly_chart")]
+    assert not any(trace["name"].startswith("IC ") for trace in summary_figures[0]["data"])
+    assert {trace["name"] for trace in summary_figures[0]["data"] if trace["name"].endswith(" SA")} == set(at.session_state[sa_key])
+    assert any(trace["name"].startswith("IC ") for trace in summary_figures[1]["data"])
+    assert not any(trace["name"].endswith(" SA") for trace in summary_figures[1]["data"])
+
+    at.session_state["primary_tabs"] = "All envelopes"
+    at.run()
+    detailed_figures = [json.loads(item.proto.spec) for item in at.get("plotly_chart")]
+    assert not any(trace["name"].startswith("IC ") for trace in detailed_figures[0]["data"])
+    assert {trace["name"] for trace in detailed_figures[0]["data"] if trace["name"].endswith(" SA")} == set(at.session_state[sa_key])
+    assert any(trace["name"].startswith("IC ") for trace in detailed_figures[1]["data"])
+    assert not any(trace["name"].endswith(" SA") for trace in detailed_figures[1]["data"])
+
+    at.toggle(key="show_paired_limits").set_value(False).run()
+    figures = [json.loads(item.proto.spec) for item in at.get("plotly_chart")]
+    assert not any(
+        trace["name"].startswith("IC ") or trace["name"].endswith(" SA")
+        for figure in figures
+        for trace in figure["data"]
+    )
+
+    at.toggle(key="show_paired_limits").set_value(True).run()
+    at.toggle(key="show_ic_limits").set_value(True).run()
+    assert at.session_state["show_paired_limits"] is False
+    assert at.session_state["show_ic_limits"] is True
+    assert at.session_state["show_sa_limits"] is False
+    figures = [json.loads(item.proto.spec) for item in at.get("plotly_chart")]
+    assert all(any(trace["name"].startswith("IC ") for trace in figure["data"]) for figure in figures)
+    assert not any(trace["name"].endswith(" SA") for figure in figures for trace in figure["data"])
+
+    at.toggle(key="show_paired_limits").set_value(True).run()
+    at.toggle(key="show_sa_limits").set_value(True).run()
+    assert at.session_state["show_paired_limits"] is False
+    assert at.session_state["show_ic_limits"] is False
+    assert at.session_state["show_sa_limits"] is True
+    figures = [json.loads(item.proto.spec) for item in at.get("plotly_chart")]
+    assert any(trace["name"].endswith(" SA") for trace in figures[0]["data"])
+    assert not any(trace["name"].startswith("IC ") for figure in figures for trace in figure["data"])
 
 
 def test_05_sa_workbook_is_accepted_and_plotted_through_exact_mm_assignment():
